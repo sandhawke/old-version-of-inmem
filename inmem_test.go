@@ -2,10 +2,11 @@ package pods
 
 import (
 	"testing"
-	//"fmt"
+	"fmt"
 	"time"
 	"strconv"
 	"sync"
+	"encoding/json"
 )
 
 func Test0(t *testing.T) {
@@ -24,6 +25,7 @@ func Test0(t *testing.T) {
 	g2.Delete()
 	g3 := p1.NewPage()
 	if g3.URL() != "http://pod1.example/auto/2" { t.Fail() }
+	
 }
 
 
@@ -69,3 +71,34 @@ func TestIncr1(t *testing.T) {
 	//fmt.Printf(content)
 	if content != "1100" { t.Fail() }
 }
+
+
+func TestJSON(t *testing.T) {
+
+	c := NewInMemoryCluster("http://cluster.example")
+	b,err := json.Marshal(c)
+	if err != nil { t.Fail() }
+	fmt.Printf("cluster = %s\n\n",b) 
+
+	p1, p1x := c.NewPod("http://pod1.example")
+	b,err = json.Marshal(p1)
+	if err != nil { t.Fail() }
+	fmt.Printf("pod = %s\n\n",b) 
+	if p1x { t.Fail() }
+	if p1 == nil { t.Fail() }
+
+	g1 := p1.NewPage()
+	b,err = json.Marshal(p1)
+	if err != nil { t.Fail() }
+	fmt.Printf("page = %s\n\n",b) 
+
+	if g1.URL() != "http://pod1.example/auto/0" { t.Fail() }
+	g2 := p1.NewPage()
+	if g2.URL() != "http://pod1.example/auto/1" { t.Fail() }
+	g2.Delete()
+	g3 := p1.NewPage()
+	if g3.URL() != "http://pod1.example/auto/2" { t.Fail() }
+	
+}
+
+

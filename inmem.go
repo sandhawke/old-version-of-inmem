@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"encoding/json"
 )
 
 type page_s struct {
@@ -29,7 +30,15 @@ type page_s struct {
 	/* somehow, eg as a nearby metadata resource. */
 	dataOnly       bool
 	appData        map[string]interface{}
+
+	/* some kind of intercepter for pod_s and cluster_s to have their
+	/* own special properties which appear when you call Get and Set,
+	/* and which end up in the JSON somehow... */
+	extraProperties func() (props []string)
+    extraGetter    func(prop string) (value interface{}, handled bool)
+	extraSetter    func(prop string, value interface{}) (handled bool)
 }
+
 
 func (page *page_s) Pod() *pod_s {
 	return page.pod
@@ -129,7 +138,7 @@ type pod_s struct {
 
 func (pod *pod_s) Pages() (result []*page_s) {
 	pod.RLock()
-	result = make([]*page_s, len(pod.pages))
+	result = make([]*page_s, 0, len(pod.pages))
 	for _, k := range pod.pages {
 		result = append(result, k)
 	}
@@ -203,7 +212,7 @@ func NewInMemoryCluster(url string) (cluster *cluster_s) {
 func (cluster *cluster_s) Pods() (result []*pod_s) {
 	cluster.RLock()
 	defer cluster.RUnlock()
-	result = make([]*pod_s, len(cluster.pods))
+	result = make([]*pod_s, 0, len(cluster.pods))
 	for _, k := range cluster.pods {
 		result = append(result, k)
 	}
@@ -250,3 +259,105 @@ func (cluster *cluster_s) PageByURL(url string, mayCreate bool) (page *page_s, c
 	}
 	return
 }
+
+
+
+//////////////////////////////
+
+// maybe we should generalize these as virtual properties and
+// have a map of them?   But some of them are the same for every page...
+//
+// should we have _contentType and _content among them?
+//
+// that would let us serialize nonData resources in json
+
+func (page *page_s) Properties() (result []string) {
+	result = make([]string,0,len(page.appData)+5)
+	result = append(result, "_id")
+	result = append(result, "_etag")
+	result = append(result, "_owner")
+	if !page.dataOnly {
+		result = append(result, "_contentType")
+		result = append(result, "_content")
+	}
+	if page.extraProperties != nil {
+		result = append(result, page.extraProperties()...)
+	}
+	page.RLock()
+	for k := range page.appData {
+		result = append(result, k)
+	}
+	page.RUnlock()
+	return
+}
+
+func (page *page_s) Get(prop string) (value interface{}, exists bool) {
+	if prop == "_id" {
+		if page.pod == nil { return "", false }
+		return page.URL(), true
+	}
+	if prop == "_etag" {  // please lock first, if using this!
+		return page.etag(), true
+	}
+	if prop == "_owner" { 
+		//if page.pod == nil { return interface{}(page).(*cluster_s).url, true }
+		if page.pod == nil { return "", false }
+		return page.pod.url, true
+	}
+	if prop == "_contentType" {
+		return page.contentType, true
+	}
+	if prop == "_content" {
+		return page.content, true
+	}
+	if page.extraGetter != nil {
+		value, exists = page.extraGetter(prop)
+		if exists {
+			return value, true
+		}
+	}
+	page.RLock()
+	value, exists = page.appData[prop]
+	page.RUnlock()
+	return
+}
+
+func (page *page_s) Set(prop string, value interface{}) {
+	if page.extraSetter != nil {
+		handled := page.extraSetter(prop, value)
+		if handled { return }
+	}
+	if prop == "_contentType" {
+		page.contentType = value.(string)
+		return
+	}
+	if prop == "_content" {
+		page.content = value.(string)
+		return
+	}
+	if prop[0] == '_' || prop[0] == '@' {
+		// don't allow any (other) values to be set like this; they
+		// are ours to handle.   We COULD give an error...?
+		return
+	}
+	page.Lock()
+	page.appData[prop] = value
+	page.Unlock()
+	return
+}
+
+func (page *page_s) MarshalJSON() (bytes []byte, err error) {
+	// extra copying for simplicity for now
+	props := page.Properties() 
+	m := make(map[string]interface{}, len(props))
+	page.RLock()
+	for _, prop := range props {
+		value, handled := page.Get(prop)
+		if handled { m[prop] = value }
+	}
+	page.RUnlock()
+	//fmt.Printf("Going to marshal %q for page %q, props %q", m, page, props)
+	return json.Marshal(m)
+	//return []byte(""), nil
+}
+
